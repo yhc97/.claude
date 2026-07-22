@@ -1,6 +1,9 @@
 *
 !.gitignore
-!/hooks
-!/agents
+!.gitattributes
 !AGENTS.md
 !CLAUDE.md
+!agents/
+!agents/**
+!hooks/
+!hooks/**
