@@ -1,0 +1,6 @@
+*
+!.gitignore
+!/hooks
+!/agents
+!AGENTS.md
+!CLAUDE.md
