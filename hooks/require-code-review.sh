@@ -134,5 +134,5 @@ fi
 # No matching review on record -> block.
 echo "Blocked: pending changes have not been code-reviewed." >&2
 echo "Delegate the review to the code-reviewer subagent and address its findings, then record it with:" >&2
-echo "  bash \"C:/Users/gordo/.claude-personal/hooks/require-code-review.sh\" --approve   (run in the repo), then retry the commit." >&2
+echo "  bash \"\$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh\" --approve   (run in the repo), then retry the commit." >&2
 exit 2

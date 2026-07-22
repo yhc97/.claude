@@ -1,0 +1,59 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch *)",
+      "Bash(git show *)",
+      "Bash(ls *)",
+      "Bash(dir *)",
+      "Bash(rg *)",
+      "Bash(python --version)",
+      "Bash(node --version)",
+      "Bash(npm ls *)",
+      "Bash(uv pip list)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_CONFIG_DIR/hooks/session-start-pull.sh\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_CONFIG_DIR/hooks/block-main-commit.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "claude-md-management@claude-plugins-official": true,
+    "code-review@claude-plugins-official": false,
+    "skill-creator@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": false,
+    "commit-commands@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": false,
+    "session-report@claude-plugins-official": true,
+    "railway@claude-plugins-official": true,
+    "github@claude-plugins-official": false,
+    "feature-dev@claude-plugins-official": false,
+    "playwright@claude-plugins-official": true
+  }
+}
