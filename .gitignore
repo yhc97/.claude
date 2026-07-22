@@ -7,3 +7,4 @@
 !agents/**
 !hooks/
 !hooks/**
+!settings.json

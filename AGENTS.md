@@ -10,7 +10,7 @@
 
 # Code review
 - After each nontrivial implementation, delegate review to the `code-reviewer` subagent (fresh context, read-only) before committing.
-- Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "C:/Users/gordo/.claude-personal/hooks/require-code-review.sh" --approve` (run in the repo) — the commit-gate hook blocks `git commit` until this matches the pending changes.
+- Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo) — the commit-gate hook blocks `git commit` until this matches the pending changes.
 - Whenever a plan is fully implemented, delegate a code review to Codex via the `mcp__codex__codex` MCP tool. Point it at the changes just made and ask it to report findings; address any findings before committing.
 
 # Plugins
