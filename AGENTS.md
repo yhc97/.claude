@@ -3,7 +3,7 @@
 
 # Git
 - Never commit directly to the main branch; create a branch first. If already on a side branch, confirm with user before further branching off.
-- Branch names use a helpful prefix: feat/, bugfix/, merge/, chore/.
+- Branch names use a helpful prefix: feat/, bugfix/, merge/, docs/, chore/.
 - Prefer small atomic commits that each describe one change over a single monolithic commit.
 - Do not commit data files to git unless the user specifically asked.
 - When initialising a new repo (or a repo that lacks one), add a `.gitattributes` file that normalizes line endings across systems (e.g. `* text=auto eol=lf`, with explicit `.bat`/`.cmd`/`.ps1` set to `eol=crlf` where relevant). Do this before the first commit so history doesn't carry mixed line endings.
@@ -20,6 +20,7 @@
 
 # Models & delegation
 - Reserve the main loop (opus) for reasoning, design, and implementation.
+- For large mechanical / parallel edits (codemods, bulk migrations across many files), delegate to `Agent` with `model: sonnet` (plus worktree isolation) or a Workflow — not for ordinary single-threaded implementation, which stays in the main loop.
 - Offload fan-out search / "where does X live" to the `explorer` subagent (haiku) — it keeps large reads out of the main context and returns `file:line` pointers.
 - Use the `test-runner` subagent (sonnet) to run suites/linters so verbose logs stay out of the main context.
 - Prefer `explorer` for cheap search; when reaching for the built-in Explore / general-purpose agents instead, pass `model: haiku` (or `sonnet` when the search is ambiguous).
