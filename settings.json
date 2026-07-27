@@ -15,6 +15,10 @@
       "Bash(uv pip list)"
     ]
   },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"$CLAUDE_CONFIG_DIR/hooks/statusline.sh\""
+  },
   "hooks": {
     "SessionStart": [
       {
