@@ -9,3 +9,7 @@
 !hooks/
 !hooks/**
 !settings.json
+
+# Re-excluded after the whitelist above, which would otherwise pull in the
+# bytecode cache python writes next to the hook helpers.
+hooks/__pycache__/
