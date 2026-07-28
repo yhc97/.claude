@@ -8,11 +8,14 @@
 # allow / no opinion.
 #
 # jq is not guaranteed on this machine and cannot safely reason about shell
-# command structure anyway, so ALL parsing + commit-detection happens in python.
-# Python reads stdin and, only when the command actually invokes `git commit`,
-# prints the single-line cwd (Windows paths can't contain newlines) — otherwise
-# it prints nothing. Bash just acts on that verdict. If no python is available,
-# JSON parsing fails, or anything else goes wrong, we FAIL OPEN.
+# command structure anyway, so ALL parsing + commit-detection happens in
+# detect-commit-target.py (shared with require-code-review.sh — see that file
+# for the output format). It reports one record per `git commit` in the command:
+# the cwd plus the repo-redirecting git global options (-C / --git-dir /
+# --work-tree) that commit used. Replaying those options is what makes
+# `git -C <other-repo> commit` get guarded against <other-repo> rather than
+# against the session cwd. Bash just acts on that verdict. If no python is
+# available, JSON parsing fails, or anything else goes wrong, we FAIL OPEN.
 
 set -u
 
@@ -23,58 +26,61 @@ fi
 # No interpreter -> can't parse -> fail open.
 [ -z "$py" ] && exit 0
 
-# Python does the whole job: parse JSON, detect a real `git commit` invocation,
-# and print ONLY the cwd when one is found (single line, no cwd -> nothing).
-cwd="$("$py" -c '
-import sys, json, re
+# A missing/unreadable helper prints nothing, which is our fail-open signal.
+info="$("$py" "$(dirname "$0")/detect-commit-target.py" 2>/dev/null)"
 
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
+# Empty -> not a git commit (or nothing we can act on) -> nothing to guard.
+[ -z "$info" ] && exit 0
 
-ti = d.get("tool_input") or {}
-command = ti.get("command") or ""
-cwd = d.get("cwd") or ""
-if not isinstance(command, str) or not isinstance(cwd, str):
-    sys.exit(0)
+# Strip CRs once, on the whole payload. Python's stdout is in text mode on
+# Windows, so the newlines it writes arrive as CRLF and every field would end
+# up with a trailing CR. Git would then be handed an option like $'-C\r', fail
+# to parse it, and return nothing — leaving the branch empty and the guard
+# failing open on exactly the redirected commits it exists to catch.
+info="${info//$'\r'/}"
 
-# Split the command into rough segments on shell boundaries so a leading `echo`
-# (or any other command word) shields text like `echo "git commit is great"`.
-# We split on newlines, ; && || | & $( and backticks. Best-effort by design:
-# this guard must fail open, so weird quoting that slips either way is fine.
-segments = re.split(r"\n|;|&&|\|\||\||&|\$\(|`", command)
+# Run git the way the guarded command would: from the tool cwd, with the same
+# repo-redirecting options after it. git applies -C options cumulatively, so a
+# relative `-C ../foo` still resolves against the cwd. Any failure (missing
+# dir, not a repo) yields empty output and we fail open.
+git_at() { git -C "$cwd" ${git_args[@]+"${git_args[@]}"} "$@" 2>/dev/null; }
 
-# Anchored at the segment start: optional leading whitespace, any number of
-# env-var assignments (FOO=bar ), then `git`, then any number of git global
-# flags (-x, --long, --long=val, -c key=val), then `commit`.
-commit_re = re.compile(
-    r"^\s*(?:\w+=\S*\s+)*git\s+(?:-\S+\s+|-c\s+\S+\s+|--\S+(?:=\S+)?\s+)*commit\b"
-)
+# Records are counted, not delimited: an option count, the cwd, then exactly
+# that many option tokens. Every command in a compound line gets its own
+# record, and ANY of them landing on main is enough to block.
+while IFS= read -r n; do
+  case "$n" in ''|*[!0-9]*) exit 0 ;; esac  # malformed -> fail open
+  IFS= read -r cwd || exit 0
+  [ -z "$cwd" ] && exit 0
 
-matched = any(commit_re.search(seg) for seg in segments)
-if matched and cwd:
-    # Windows paths cannot contain newlines, so one line is unambiguous.
-    sys.stdout.write(cwd)
-' 2>/dev/null)"
+  git_args=()
+  while [ "${#git_args[@]}" -lt "$n" ]; do
+    IFS= read -r arg || exit 0
+    git_args+=("$arg")
+  done
 
-# Empty -> not a git commit (or no cwd) -> nothing to guard.
-[ -z "$cwd" ] && exit 0
+  # Per-repo exemption. A repo opts out of the commit gates by placing an empty
+  # file at .git/claude-hooks-exempt — used for the personal Obsidian vault,
+  # where branch discipline and code review are meaningless (no remote, no
+  # branches, no collaborators, prose not code). The marker lives inside .git
+  # so it is never committed and never synced, and it affects no other repo.
+  gitdir="$(git_at rev-parse --absolute-git-dir || true)"
+  if [ -n "$gitdir" ] && [ -f "$gitdir/claude-hooks-exempt" ]; then
+    continue
+  fi
 
-# Determine the current branch in the tool cwd. Fail open on any error:
-# missing dir, not a repo, detached HEAD, or empty output all yield "".
-if [ -d "$cwd" ]; then
-  branch="$(cd "$cwd" 2>/dev/null && git branch --show-current 2>/dev/null || true)"
-else
-  exit 0
-fi
+  # Determine the current branch in the target repo. Fail open on any error:
+  # missing dir, not a repo, or detached HEAD all yield "".
+  branch="$(git_at branch --show-current || true)"
 
-# Detached HEAD / not a repo / unknown -> empty branch -> fail open.
-[ -z "$branch" ] && exit 0
-
-if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
-  echo "Blocked: committing directly to main/master violates the user's git rules. Create a branch first (feat/, bugfix/, merge/, chore/)." >&2
-  exit 2
-fi
+  if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+    # Name the repo: the commit being blocked is not necessarily the one in the
+    # session cwd, and "create a branch" is unactionable without knowing where.
+    target="$(git_at rev-parse --show-toplevel || true)"
+    [ -z "$target" ] && target="$gitdir"
+    echo "Blocked: committing directly to $branch in $target violates the user's git rules. Create a branch there first (feat/, bugfix/, merge/, chore/)." >&2
+    exit 2
+  fi
+done <<< "$info"
 
 exit 0
