@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# Tests for the code-review commit gate (require-code-review.sh +
+# review-manifest.py).
+#
+# Run:  bash hooks/tests/test-review-gate.sh
+#
+# The gate has two failure modes and both are silent: block every commit, or
+# stop enforcing while still looking like it works. Neither announces itself in
+# normal use, which is why this exists.
+#
+# Every case builds a throwaway repo under a temp dir. Nothing here touches the
+# repo the tests live in.
+
+set -u
+
+HOOKS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+GATE="$HOOKS_DIR/require-code-review.sh"
+HELPER="$HOOKS_DIR/review-manifest.py"
+TMPROOT="${TMPDIR:-/tmp}/review-gate-tests.$$"
+
+PASS=0
+FAIL=0
+
+cleanup() { rm -rf "$TMPROOT"; }
+trap cleanup EXIT
+
+# Assert an exit code, naming what was expected in words rather than digits —
+# a bare "expected 2" tells you nothing when a test fails months from now.
+check() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    PASS=$((PASS + 1))
+    printf '  ok    %s\n' "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf '  FAIL  %s (expected exit %s, got %s)\n' "$label" "$expected" "$actual"
+  fi
+}
+
+# A fresh repo with one commit: a.py (code) and README.md (prose).
+new_repo() {
+  local dir="$TMPROOT/$1"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  (
+    cd "$dir" || exit 1
+    git init -q .
+    git config user.email test@example.com
+    git config user.name test
+    printf 'original\n' > a.py
+    printf 'docs\n' > README.md
+    git add -A
+    git commit -qm base
+  ) >/dev/null 2>&1
+  echo "$dir"
+}
+
+# An empty repo with no commits, for the unborn-HEAD cases.
+new_empty_repo() {
+  local dir="$TMPROOT/$1"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  ( cd "$dir" && git init -q . && git config user.email test@example.com &&
+    git config user.name test ) >/dev/null 2>&1
+  echo "$dir"
+}
+
+in_repo() { ( cd "$1" && shift && "$@" ) >/dev/null 2>&1; }
+
+# Drive the gate the way Claude Code does: PreToolUse JSON on stdin. The hook
+# reports its verdict as an exit code — 0 allow, 2 block.
+run_gate() {
+  local dir="$1" command="${2:-git commit -m x}"
+  local win
+  win="$(cd "$dir" && { pwd -W 2>/dev/null || pwd; })"
+  printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$win" "$command" \
+    | bash "$GATE" >/dev/null 2>&1
+  echo $?
+}
+
+approve() { ( cd "$1" && bash "$GATE" --approve ) >/dev/null 2>&1; }
+
+marker_of() { echo "$1/.git/claude-code-review-approved"; }
+
+mkdir -p "$TMPROOT"
+
+# --- the two behaviours this change exists to deliver ----------------------
+
+echo "one review covers a sequence of atomic commits"
+repo="$(new_repo atomic)"
+in_repo "$repo" bash -c 'printf x >> a.py; printf x >> b.py; printf x >> c.py'
+approve "$repo"
+check "commit 1 of 3" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'git add a.py && git commit -qm one'
+check "commit 2 of 3, no re-approval" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'git add b.py && git commit -qm two'
+check "commit 3 of 3, no re-approval" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'git add c.py && git commit -qm three'
+check "sequence complete" 0 "$(run_gate "$repo")"
+
+echo "but the gate still bites on anything unreviewed"
+repo="$(new_repo bites)"
+in_repo "$repo" bash -c 'printf x >> a.py'
+check "unreviewed edit" 2 "$(run_gate "$repo")"
+approve "$repo"
+check "after approval" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'printf more >> a.py'
+check "edited again after approval" 2 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'git checkout -q -- a.py; printf new > brand-new.py'
+check "new file after approval" 2 "$(run_gate "$repo")"
+
+echo "staging is bookkeeping, not a content change"
+repo="$(new_repo staging)"
+in_repo "$repo" bash -c 'printf x >> a.py'
+approve "$repo"
+in_repo "$repo" git add a.py
+check "git add must not invalidate the review" 0 "$(run_gate "$repo")"
+in_repo "$repo" git reset -q
+check "git reset must not invalidate it either" 0 "$(run_gate "$repo")"
+
+echo "docs-only changes need no review"
+repo="$(new_repo docs)"
+in_repo "$repo" bash -c 'printf x >> README.md'
+check "prose alone" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'printf x >> a.py'
+check "prose mixed with code" 2 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'git checkout -q -- .'
+
+repo="$(new_repo docs_compose)"
+in_repo "$repo" bash -c 'printf x >> a.py'
+approve "$repo"
+in_repo "$repo" bash -c 'printf x >> README.md'
+check "reviewed code plus an unreviewed doc tweak" 0 "$(run_gate "$repo")"
+
+repo="$(new_repo docs_scope)"
+in_repo "$repo" bash -c 'mkdir -p docs && printf x > docs/conf.py'
+check "location never exempts: docs/conf.py" 2 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'rm -rf docs; printf x > .gitattributes'
+check ".gitattributes is not exempt (it changes every other oid)" 2 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'rm -f .gitattributes; printf x > NOTES.MD'
+check "basename match is case-folded: NOTES.MD" 0 "$(run_gate "$repo")"
+
+# --- edge cases in the manifest -------------------------------------------
+
+echo "manifest edge cases"
+repo="$(new_repo rename)"
+in_repo "$repo" git mv a.py renamed.py
+check "a rename is unreviewed on both sides" 2 "$(run_gate "$repo")"
+approve "$repo"
+check "and is fine once reviewed" 0 "$(run_gate "$repo")"
+
+repo="$(new_empty_repo unborn)"
+in_repo "$repo" bash -c 'printf x > a.py'
+check "unborn HEAD, unreviewed" 2 "$(run_gate "$repo")"
+approve "$repo"
+check "unborn HEAD, reviewed" 0 "$(run_gate "$repo")"
+
+repo="$(new_repo weird_paths)"
+in_repo "$repo" bash -c "printf x > 'my file ünïcode.py'"
+check "spaces and non-ASCII, unreviewed" 2 "$(run_gate "$repo")"
+approve "$repo"
+check "spaces and non-ASCII, reviewed" 0 "$(run_gate "$repo")"
+
+# Both an untracked and a TRACKED-then-modified file, because only the tracked
+# one reaches `git hash-object --stdin-paths`. Status reports repo-root-relative
+# paths while the approve-mode subprocess inherits the caller's subdirectory, so
+# this pins that hash-object resolves its inputs against the repo root.
+repo="$(new_repo subdir)"
+in_repo "$repo" bash -c 'mkdir -p sub/deep && printf x > sub/deep/tracked.py &&
+                         git add -A && git commit -qm sub'
+in_repo "$repo" bash -c 'printf more >> sub/deep/tracked.py'
+( cd "$repo/sub/deep" && bash "$GATE" --approve ) >/dev/null 2>&1
+check "approving a modified tracked file from a subdirectory" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'printf untracked > sub/deep/new.py'
+( cd "$repo/sub" && bash "$GATE" --approve ) >/dev/null 2>&1
+check "approving an untracked file from a subdirectory" 0 "$(run_gate "$repo")"
+
+# An empty pending set is allowed only with a marker. The hook sees the tree
+# BEFORE the command runs, so a clean tree is exactly what a compound
+# write-then-commit looks like from here; allowing it unconditionally would let
+# content authored inside the Bash tool commit with no review at all.
+repo="$(new_repo clean)"
+check "nothing pending, no marker" 2 "$(run_gate "$repo")"
+check "compound write-then-commit from a clean tree" 2 \
+  "$(run_gate "$repo" "printf evil > new.py && git add -A && git commit -m x")"
+in_repo "$repo" bash -c 'printf x >> a.py'
+approve "$repo"
+in_repo "$repo" bash -c 'git add -A && git commit -qm landed'
+check "--amend inside an approved sequence" 0 "$(run_gate "$repo" "git commit --amend --no-edit")"
+
+echo "the prose exemption must not cover code"
+repo="$(new_repo prose_vs_code)"
+for f in licence_check.sh copying_utils.c requirements.txt CMakeLists.txt; do
+  in_repo "$repo" bash -c "printf x > '$f'"
+  check "$f is not prose" 2 "$(run_gate "$repo")"
+  in_repo "$repo" bash -c "rm -f '$f'"
+done
+for f in LICENCE LICENSE.md COPYING.txt CHANGELOG.md; do
+  in_repo "$repo" bash -c "printf x > '$f'"
+  check "$f is prose" 0 "$(run_gate "$repo")"
+  in_repo "$repo" bash -c "rm -f '$f'"
+done
+
+# With no index entry the mode is unknowable, and guessing made an executable
+# file block after `git reset` re-labelled an identical blob — while the block
+# message tells the model not to re-approve. Both file modes must satisfy it.
+echo "an executable file survives staging round-trips"
+repo="$(new_repo exec_mode)"
+in_repo "$repo" bash -c 'printf "#!/bin/sh\necho hi\n" > run.sh &&
+                         git add run.sh && git update-index --chmod=+x run.sh'
+approve "$repo"
+check "approved while staged executable" 0 "$(run_gate "$repo")"
+in_repo "$repo" git reset -q
+check "still approved after git reset drops the index entry" 0 "$(run_gate "$repo")"
+in_repo "$repo" git add run.sh
+check "still approved once re-staged" 0 "$(run_gate "$repo")"
+
+# A symlink's identity has to be git's own 120000:<oid>, not a shape of our
+# own. If it were not comparable with what the index reports, approving a
+# symlink change and then staging it would block with no way out but
+# re-approving after every `git add`. Symlinks usually cannot be created on
+# Windows, so assert the derivation directly instead.
+symlink_oid="$("$(command -v python3 || command -v python)" - "$HELPER" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("review_manifest", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+# Drive the real function; symlinks generally cannot be created on Windows.
+os.readlink = lambda _path: "reviewed-new-target"
+print(mod.symlink_identity("irrelevant"))
+PY
+)"
+git_oid="$(printf 'reviewed-new-target' | git hash-object --stdin)"
+check "a symlink identity matches git's own blob oid" "$git_oid" "$symlink_oid"
+
+repo="$(new_repo redirect)"
+other="$(new_repo redirect_other)"
+in_repo "$other" bash -c 'printf x >> a.py'
+check "git -C <other> commit is gated against <other>" 2 \
+  "$(run_gate "$repo" "git -C $(cd "$other" && { pwd -W 2>/dev/null || pwd; }) commit -m x")"
+
+# --- marker validity -------------------------------------------------------
+
+echo "marker validity"
+repo="$(new_repo marker)"
+in_repo "$repo" bash -c 'printf x >> a.py'
+approve "$repo"
+marker="$(marker_of "$repo")"
+
+printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > "$marker"
+check "legacy v1 digest counts as no approval" 2 "$(run_gate "$repo")"
+printf '{"version":2,"appro' > "$marker"
+check "corrupt JSON counts as no approval" 2 "$(run_gate "$repo")"
+printf '{"version":1,"approved":{}}' > "$marker"
+check "wrong version counts as no approval" 2 "$(run_gate "$repo")"
+
+approve "$repo"
+python_bin="$(command -v python3 || command -v python)"
+"$python_bin" - "$marker" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+data = json.load(open(path))
+data["created_at"] = int(time.time()) - 8 * 24 * 3600
+json.dump(data, open(path, "w"))
+PY
+check "a marker older than the TTL expires" 2 "$(run_gate "$repo")"
+
+# --- fail open -------------------------------------------------------------
+# The invariant: a gate that cannot evaluate must never block. A wedged commit
+# gate is worse than an unenforced one, because it cannot be worked around.
+
+echo "fail open on everything unevaluable"
+repo="$(new_repo failopen)"
+in_repo "$repo" bash -c 'printf x >> a.py'
+check "sanity: this repo does block" 2 "$(run_gate "$repo")"
+
+win="$(cd "$repo" && { pwd -W 2>/dev/null || pwd; })"
+payload="$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$win")"
+
+echo "$payload" | env PATH="/usr/bin:/bin" bash "$GATE" >/dev/null 2>&1
+check "no python interpreter" 0 $?
+
+printf '{"cwd":"/no/such/dir","tool_input":{"command":"git commit -m x"}}' \
+  | bash "$GATE" >/dev/null 2>&1
+check "not a git repository" 0 $?
+
+printf 'not json at all' | bash "$GATE" >/dev/null 2>&1
+check "malformed stdin" 0 $?
+
+printf '' | bash "$GATE" >/dev/null 2>&1
+check "empty stdin" 0 $?
+
+check "a command that is not a commit" 0 "$(run_gate "$repo" "git status")"
+
+# A helper that dies must fail open. Its exit code is the verdict, and the
+# codes are chosen so that Python's exit-1-on-exception cannot read as a block.
+cp "$HELPER" "$TMPROOT/helper.bak"
+printf 'raise RuntimeError("boom")\n' > "$HELPER"
+echo "$payload" | bash "$GATE" >/dev/null 2>&1
+check "helper crashes with a traceback" 0 $?
+cp "$TMPROOT/helper.bak" "$HELPER"
+check "sanity: blocking resumes once the helper is restored" 2 "$(run_gate "$repo")"
+
+echo "escape hatches"
+touch "$repo/.git/claude-hooks-exempt"
+check "per-repo claude-hooks-exempt" 0 "$(run_gate "$repo")"
+rm -f "$repo/.git/claude-hooks-exempt"
+touch "$repo/.git/MERGE_HEAD"
+check "merge in progress" 0 "$(run_gate "$repo")"
+rm -f "$repo/.git/MERGE_HEAD"
+
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]
