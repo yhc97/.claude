@@ -318,19 +318,69 @@ check "but a real edit still blocks" 2 "$(run_gate "$symdst")"
 # own. If it were not comparable with what the index reports, approving a
 # symlink change and then staging it would block with no way out but
 # re-approving after every `git add`. Symlinks usually cannot be created on
-# Windows, so assert the derivation directly instead.
-symlink_oid="$("$(command -v python3 || command -v python)" - "$HELPER" <<'PY'
+# Windows, so drive the derivation directly, with os.readlink monkeypatched.
+#
+# This no longer proves the oid is right — the function asks git for it, so
+# comparing the two would be git against itself. What it still pins is the
+# plumbing either side of that call: the separator rewrite below, and the fact
+# that a link yields an oid at all rather than ABSENT or a traceback.
+symlink_probe() {
+  "$(command -v python3 || command -v python)" - "$HELPER" "$1" <<'PY'
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("review_manifest", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-# Drive the real function; symlinks generally cannot be created on Windows.
-os.readlink = lambda _path: "reviewed-new-target"
-print(mod.symlink_identity("irrelevant"))
+os.readlink = lambda _path: sys.argv[2]
+print(mod.symlink_identity([], "irrelevant"))
 PY
-)"
+}
 git_oid="$(printf 'reviewed-new-target' | git hash-object --stdin)"
-check "a symlink identity matches git's own blob oid" "$git_oid" "$symlink_oid"
+check "a symlink identity matches git's own blob oid" \
+  "$git_oid" "$(symlink_probe 'reviewed-new-target')"
+
+# Windows hands back 'd\target' where git hashes the blob 'd/target'. The
+# separator-containing end-to-end case above only runs where native symlinks
+# exist, so pin the normalisation here too. Skipped on POSIX, where a backslash
+# is a legal filename character and rewriting it would corrupt the oid.
+pysep="$("$(command -v python3 || command -v python)" -c 'import os; print(os.sep)')"
+if [ "$pysep" != "/" ]; then
+  git_oid="$(printf 'dd/target' | git hash-object --stdin)"
+  check "a Windows-style separator is normalised before hashing" \
+    "$git_oid" "$(symlink_probe "dd${pysep}target")"
+else
+  git_oid="$(printf 'dd\\target' | git hash-object --stdin)"
+  check "a backslash is left alone where it is a legal filename character" \
+    "$git_oid" "$(symlink_probe 'dd\target')"
+fi
+
+# Git supports sha256 repositories, where a blob oid is not a sha1 at all. The
+# oid used to be hand-rolled with hashlib.sha1, so approving an unstaged symlink
+# there recorded a sha1 while `git add` produced a sha256 — a false block on the
+# most ordinary action. Asking git for the oid is what makes this format-blind.
+if git init -q --object-format=sha256 "$TMPROOT/probe256" >/dev/null 2>&1; then
+  rm -rf "$TMPROOT/probe256"
+  echo "a sha256 repository"
+  s256="$TMPROOT/sha256repo"; rm -rf "$s256"
+  git init -q --object-format=sha256 "$s256" >/dev/null 2>&1
+  in_repo "$s256" git config user.email test@example.com
+  in_repo "$s256" git config user.name test
+  in_repo "$s256" bash -c 'printf seed > seed.txt && git add -A && git commit -qm base'
+  check "the repo really is sha256" "sha256" \
+    "$(cd "$s256" && git rev-parse --show-object-format)"
+  # cacheinfo rather than ln -s, so this runs without native symlink support.
+  in_repo "$s256" bash -c 'oid="$(printf prod.env | git hash-object -w --stdin)" &&
+                           git update-index --add --cacheinfo "120000,$oid,conf" &&
+                           git commit -qm link'
+  in_repo "$s256" bash -c 'printf other.env > conf'
+  approve "$s256"
+  check "reviewed symlink in a sha256 repo" 0 "$(run_gate "$s256")"
+  in_repo "$s256" git add conf
+  check "staging it must not re-block" 0 "$(run_gate "$s256")"
+else
+  rm -rf "$TMPROOT/probe256"
+  SKIP=$((SKIP + 3))
+  echo "a sha256 repository (SKIPPED: this git cannot create one)"
+fi
 
 repo="$(new_repo redirect)"
 other="$(new_repo redirect_other)"

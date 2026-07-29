@@ -93,7 +93,6 @@ for a verdict:
     *    anything else means "could not evaluate" and the caller FAILS OPEN
 """
 
-import hashlib
 import json
 import os
 import subprocess
@@ -388,7 +387,7 @@ def worktree_identities(prefix, prefix_cwd, entries, index, head, symlinks_ok):
             # the regular file it replaced: the blob is identical, the tag is
             # not. islink is checked first because a link to a directory would
             # also satisfy isdir.
-            identities[path] = tagged(TYPE_LINK, symlink_identity(full))
+            identities[path] = tagged(TYPE_LINK, symlink_identity(prefix, full))
             continue
         if os.path.isdir(full):
             # A submodule/gitlink. hash-object cannot hash a directory and would
@@ -450,12 +449,19 @@ def worktree_identities(prefix, prefix_cwd, entries, index, head, symlinks_ok):
     return identities
 
 
-def symlink_identity(full_path):
+def symlink_identity(prefix, full_path):
     """A symlink's git identity: the oid of the blob holding its target.
 
-    Git stores a symlink as a blob whose content is the target string.
-    Computing the oid here rather than shelling out keeps it off the hash-object
-    batch, which cannot hash a link without following it.
+    Git stores a symlink as a blob whose content is the target string. This asks
+    git for the oid instead of hashing in Python, because the repo's object
+    format is git's to decide: a hand-rolled sha1 silently disagrees with
+    everything the index reports in a sha256 repository, and approving an
+    unstaged link there would false-block the moment it was staged.
+
+    --stdin, not the --stdin-paths batch the regular files go through: that form
+    follows links and would hash the target's contents instead of the link. It
+    also applies no filters, which is correct — git never eol-converts a symlink
+    target, so a filtered hash would be the wrong oid.
     """
     try:
         target = os.readlink(full_path)
@@ -473,9 +479,24 @@ def symlink_identity(full_path):
         if os.sep != "/":
             target = target.replace(os.sep, "/")
         target = target.encode("utf-8", "surrogateescape")
-    # A git blob oid is sha1 over the object header plus the content.
-    digest = hashlib.sha1(b"blob %d\0" % len(target) + target).hexdigest()
-    return digest
+
+    try:
+        done = subprocess.run(
+            ["git"] + prefix + ["hash-object", "--stdin"],
+            input=target,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError as exc:
+        raise CannotEvaluate("could not hash the symlink %s: %s" % (full_path, exc))
+    if done.returncode != 0:
+        raise CannotEvaluate("hash-object failed for the symlink %s" % full_path)
+
+    oid = decode(done.stdout).strip()
+    if not oid:
+        raise CannotEvaluate("hash-object returned nothing for %s" % full_path)
+    return oid
 
 
 def build_state(prefix, prefix_cwd):
