@@ -18,8 +18,13 @@ GATE="$HOOKS_DIR/require-code-review.sh"
 HELPER="$HOOKS_DIR/review-manifest.py"
 TMPROOT="${TMPDIR:-/tmp}/review-gate-tests.$$"
 
+# Git Bash on Windows makes `ln -s` COPY unless told otherwise, which would turn
+# every symlink case below into a silent false pass. Ignored on POSIX.
+export MSYS=winsymlinks:nativestrict
+
 PASS=0
 FAIL=0
+SKIP=0
 
 cleanup() { rm -rf "$TMPROOT"; }
 trap cleanup EXIT
@@ -65,7 +70,15 @@ new_empty_repo() {
   echo "$dir"
 }
 
-in_repo() { ( cd "$1" && shift && "$@" ) >/dev/null 2>&1; }
+# Setup that fails silently produces a test that passes for the wrong reason, so
+# a broken setup command is itself a failure rather than a shrug.
+in_repo() {
+  local dir="$1"; shift
+  if ! ( cd "$dir" && "$@" ) >/dev/null 2>&1; then
+    FAIL=$((FAIL + 1))
+    printf '  FAIL  setup command failed: %s\n' "$*"
+  fi
+}
 
 # Drive the gate the way Claude Code does: PreToolUse JSON on stdin. The hook
 # reports its verdict as an exit code — 0 allow, 2 block.
@@ -214,6 +227,92 @@ in_repo "$repo" git reset -q
 check "still approved after git reset drops the index entry" 0 "$(run_gate "$repo")"
 in_repo "$repo" git add run.sh
 check "still approved once re-staged" 0 "$(run_gate "$repo")"
+in_repo "$repo" bash -c 'git update-index --chmod=-x run.sh'
+check "flipping the exec bit alone is not a content change" 0 "$(run_gate "$repo")"
+
+# Git stores a symlink as a blob holding the target string, so a regular file
+# and a symlink whose target equals its contents are the SAME blob and differ
+# only in mode. Without a type tag in the identity a reviewed file could be
+# swapped for a symlink to anywhere and the gate would allow it — verified as a
+# live bypass, which is why these two cases exist. Skipped where the filesystem
+# will not make a native symlink (Windows without Developer Mode).
+if ( cd "$TMPROOT" && ln -s target probe ) >/dev/null 2>&1 && [ -L "$TMPROOT/probe" ]; then
+  rm -f "$TMPROOT/probe"
+  echo "a type change is a change, even at an identical blob"
+  repo="$(new_repo typechange)"
+  # No separator in the target: on Windows os.readlink would rewrite "a/b" to
+  # "a\b" and the oids would differ for the wrong reason, hiding the real test.
+  in_repo "$repo" bash -c 'printf prod.env > loader.py'
+  approve "$repo"
+  check "reviewed regular file" 0 "$(run_gate "$repo")"
+  in_repo "$repo" bash -c 'rm loader.py && ln -s prod.env loader.py'
+  check "file swapped for a symlink at the same oid" 2 "$(run_gate "$repo")"
+  approve "$repo"
+  check "reviewed symlink" 0 "$(run_gate "$repo")"
+  in_repo "$repo" bash -c 'rm loader.py && printf prod.env > loader.py'
+  check "symlink swapped back for a file at the same oid" 2 "$(run_gate "$repo")"
+
+  echo "but an unchanged symlink still stages freely"
+  repo="$(new_repo symlink_staging)"
+  in_repo "$repo" bash -c 'ln -s prod.env conf'
+  approve "$repo"
+  in_repo "$repo" git add conf
+  check "staging a reviewed symlink does not re-block" 0 "$(run_gate "$repo")"
+  in_repo "$repo" git reset -q
+  check "unstaging it does not either" 0 "$(run_gate "$repo")"
+
+  # Windows os.readlink returns 'd\target' where git stores the blob 'd/target',
+  # so the identity was the sha of the wrong bytes and staging false-blocked.
+  # The typechange cases above deliberately use a separator-free target; this one
+  # exists so that choice hides nothing.
+  echo "a symlink target containing a separator"
+  repo="$(new_repo symlink_sep)"
+  in_repo "$repo" bash -c 'mkdir -p dd && printf x > dd/target && ln -s dd/target link'
+  approve "$repo"
+  check "reviewed link into a subdirectory" 0 "$(run_gate "$repo")"
+  in_repo "$repo" git add link
+  check "staging it must not re-block" 0 "$(run_gate "$repo")"
+else
+  rm -f "$TMPROOT/probe"
+  # Counted, not just printed. A silent skip means a box without Developer Mode
+  # reports all-green while the bypass cases never ran at all.
+  SKIP=$((SKIP + 8))
+  echo "a type change is a change (SKIPPED: no native symlinks on this host)"
+fi
+
+# The regression that the type tag introduced, and the reason the worktree side
+# cannot simply trust islink. With core.symlinks off — the Windows default — git
+# checks a 120000 entry out as a PLAIN FILE holding the target text, yet still
+# stores mode 120000 on `git add`. Tagging from the filesystem made an ordinary
+# `git add` of reviewed content block.
+#
+# The committed symlink is built with update-index --cacheinfo rather than ln -s
+# so this runs everywhere, including hosts that cannot create a native link —
+# which is exactly where the bug lives.
+echo "a checked-out symlink that the filesystem cannot represent"
+symsrc="$TMPROOT/symsrc"; symdst="$TMPROOT/symdst"
+rm -rf "$symsrc" "$symdst"; mkdir -p "$symsrc"
+(
+  cd "$symsrc" && git init -q . &&
+  git config user.email test@example.com && git config user.name test &&
+  printf 'real\n' > real.txt &&
+  oid="$(printf 'real.txt' | git hash-object -w --stdin)" &&
+  git update-index --add --cacheinfo "120000,$oid,conf" &&
+  git add real.txt && git commit -qm base
+) >/dev/null 2>&1
+git -c core.symlinks=false clone -q "$symsrc" "$symdst" >/dev/null 2>&1
+in_repo "$symdst" git config user.email test@example.com
+in_repo "$symdst" git config user.name test
+in_repo "$symdst" git config core.symlinks false
+check "the checkout really is a plain file, not a link" \
+  "plain" "$([ -L "$symdst/conf" ] && echo link || echo plain)"
+in_repo "$symdst" bash -c 'printf other.env > conf'
+approve "$symdst"
+check "reviewed placeholder" 0 "$(run_gate "$symdst")"
+in_repo "$symdst" git add conf
+check "staging it must not re-block" 0 "$(run_gate "$symdst")"
+in_repo "$symdst" bash -c 'printf changed-again > conf'
+check "but a real edit still blocks" 2 "$(run_gate "$symdst")"
 
 # A symlink's identity has to be git's own 120000:<oid>, not a shape of our
 # own. If it were not comparable with what the index reports, approving a
@@ -253,6 +352,12 @@ printf '{"version":2,"appro' > "$marker"
 check "corrupt JSON counts as no approval" 2 "$(run_gate "$repo")"
 printf '{"version":1,"approved":{}}' > "$marker"
 check "wrong version counts as no approval" 2 "$(run_gate "$repo")"
+# v2 is the version actually in the wild: its entries are bare oids that can no
+# longer match a `<type>:<oid>` identity, so it must read as "no approval" and
+# cost one re-approval, not mismatch silently and forever.
+printf '{"version":2,"created_at":%d,"approved":{"a.py":["%s"]}}' \
+  "$(date +%s)" "$(in_repo_oid="$(cd "$repo" && git hash-object a.py)"; echo "$in_repo_oid")" > "$marker"
+check "a v2 marker's bare oids count as no approval" 2 "$(run_gate "$repo")"
 
 approve "$repo"
 python_bin="$(command -v python3 || command -v python)"
@@ -309,5 +414,9 @@ touch "$repo/.git/MERGE_HEAD"
 check "merge in progress" 0 "$(run_gate "$repo")"
 rm -f "$repo/.git/MERGE_HEAD"
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+if [ "$SKIP" -gt 0 ]; then
+  printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
+else
+  printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]
