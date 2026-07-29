@@ -154,8 +154,15 @@ while IFS= read -r n; do
   # in the wrong repo records a marker that can never satisfy this gate.
   target="$("${GIT_CMD[@]}" rev-parse --show-toplevel 2>/dev/null || true)"
   [ -z "$target" ] && target="$gitdir"
-  echo "Blocked: these paths in $target have changes no code review has covered:" >&2
-  echo "$unapproved" | sed 's/^/  /' >&2
+  # An empty list means the block came from the marker itself (missing, corrupt,
+  # superseded by a version bump, or expired) rather than from any one path.
+  # Printing the "these paths" heading over a blank line reads as a bug.
+  if [ -n "$unapproved" ]; then
+    echo "Blocked: these paths in $target have changes no code review has covered:" >&2
+    echo "$unapproved" | sed 's/^/  /' >&2
+  else
+    echo "Blocked: no valid code review is on record for $target." >&2
+  fi
   echo "Delegate the review to the code-reviewer subagent and address its findings, then record it with:" >&2
   echo "  bash \"\$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh\" --approve   (run inside $target), then retry the commit." >&2
   echo "One approval covers a whole sequence of atomic commits, so do NOT re-approve between them — only after further edits." >&2
