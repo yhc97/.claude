@@ -11,6 +11,8 @@
 # Code review
 - After each nontrivial implementation, delegate review to the `code-reviewer` subagent (fresh context, read-only) before committing; address its findings.
 - Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo) — the commit-gate hook blocks `git commit` until this matches the pending changes.
+- One approval covers the whole sequence of atomic commits for those changes. Do not re-review between them; re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
+- Prose-only changes need no review at all — the gate skips a commit touching only `*.md`, `*.txt`, `*.rst`, `LICENCE`/`LICENSE`, `COPYING` or `.gitignore`. Anything else, including `.gitattributes`, still needs one.
 - Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code. Point it at the changes and address any findings before committing. Skip Codex for small/routine changes — the subagent plus the commit gate already cover those.
 
 # Plugins
