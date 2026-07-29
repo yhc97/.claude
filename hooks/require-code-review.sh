@@ -25,39 +25,32 @@
 # detect-commit-target.py, shared with block-main-commit.sh. It reports one
 # record per `git commit` found, naming the repo that commit actually targets —
 # which is not the cwd when the command uses -C / --git-dir / --work-tree.
+#
+# What counts as "reviewed" is decided by review-manifest.py, shared between the
+# two modes here. It records the content identity of every pending path and
+# allows a commit while everything still pending is content a reviewer has
+# already seen. Two consequences that are the whole point of it:
+#   * one review covers a whole sequence of atomic commits, because committing
+#     part of the reviewed work leaves the rest still reviewed;
+#   * a commit touching only prose skips the gate, because an opus code review
+#     of a README is a waste of a review.
+# Its exit code is the verdict — 0 allow, 10 block, anything else means it could
+# not tell and we fail open.
 
 set -u
 
-# How we invoke git. Approve mode runs in the shell's own repo, so plain `git`.
-# Hook mode replaces this with the tool cwd plus the same repo-redirecting
-# global options the guarded command used, so `git -C <other-repo> commit` is
-# gated against <other-repo> and not against the cwd.
-GIT_CMD=(git)
+REVIEW_EXIT_ALLOW=0
+REVIEW_EXIT_BLOCK=10
 
-# --- shared fingerprint of the pending changes -----------------------------
-# CRITICAL: hook mode and approve mode MUST compute this identically, so both
-# call this one function. Both `git status --porcelain` and `git diff HEAD`
-# report the whole repo with repo-root-relative paths, so the answer does not
-# depend on which directory inside the repo we are standing in — except that
-# diff.relative would scope the diff to the cwd, so it is pinned off.
-# Fingerprint = sha256 of `git status --porcelain` output concatenated with
-# `git diff HEAD` output. `git diff HEAD` fails in a repo with no commits yet —
-# that is tolerated and treated as empty output (we do NOT fail closed).
-compute_fingerprint() {
-  local status diff
-  # A failed status is indistinguishable from a clean tree once captured, so
-  # check it: an unreadable index or worktree must print nothing, which every
-  # caller reads as "cannot evaluate" and fails open. Hashing the empty output
-  # instead would produce a confident mismatch and block.
-  # -uall, not the default -unormal: the default collapses a whole untracked
-  # directory into one `?? dir/` entry, so files added inside it after the
-  # review would not change the fingerprint at all.
-  if ! status="$("${GIT_CMD[@]}" status --porcelain -uall 2>/dev/null)"; then
-    return 0
+# Locate the python interpreter, or "" if there is none. Without one the gate
+# cannot evaluate anything and both modes degrade to no-ops.
+find_python() {
+  if command -v python3 >/dev/null 2>&1; then echo "python3"
+  elif command -v python >/dev/null 2>&1; then echo "python"
   fi
-  diff="$("${GIT_CMD[@]}" -c diff.relative=false diff HEAD 2>/dev/null || true)"
-  printf '%s\n%s' "$status" "$diff" | sha256sum | awk '{print $1}'
 }
+
+MANIFEST_HELPER="$(dirname "$0")/review-manifest.py"
 
 # --- approve mode ----------------------------------------------------------
 # Record the current pending-change fingerprint as "reviewed". Must be run from
@@ -71,20 +64,28 @@ if [ "${1:-}" = "--approve" ]; then
     echo "Error: --approve must be run inside a git repository." >&2
     exit 1
   fi
-  fp="$(compute_fingerprint)"
-  if [ -z "$fp" ] || ! printf '%s' "$fp" > "$gitdir/claude-code-review-approved"; then
+
+  py="$(find_python)"
+  # Hook mode already fails open without an interpreter, so the gate cannot
+  # block on this machine either way. Erroring here would stall the caller over
+  # a marker that was never going to be consulted; say so and carry on.
+  if [ -z "$py" ]; then
+    echo "Note: no python interpreter found, so the code-review gate is inactive here. Nothing recorded."
+    exit 0
+  fi
+
+  if ! count="$("$py" "$MANIFEST_HELPER" record --marker "$gitdir/claude-code-review-approved" 2>&1)"; then
     echo "Error: could not record the review marker in $gitdir." >&2
+    [ -n "$count" ] && echo "$count" >&2
     exit 1
   fi
-  echo "Recorded code review for pending changes (fingerprint ${fp:0:12})."
+  echo "Recorded code review covering ${count%%$'\n'*} pending path(s)."
+  echo "This covers the whole sequence of atomic commits for these changes — no need to re-approve between them."
   exit 0
 fi
 
 # --- hook mode -------------------------------------------------------------
-py=""
-if command -v python3 >/dev/null 2>&1; then py="python3"
-elif command -v python >/dev/null 2>&1; then py="python"
-fi
+py="$(find_python)"
 # No interpreter -> can't parse -> fail open.
 [ -z "$py" ] && exit 0
 
@@ -118,7 +119,8 @@ while IFS= read -r n; do
   # Run git the way the guarded command would: from the tool cwd, with the same
   # repo-redirecting options after it. git applies -C options cumulatively, so
   # a relative `-C ../foo` still resolves against the cwd.
-  GIT_CMD=(git -C "$cwd" ${git_args[@]+"${git_args[@]}"})
+  GIT_PREFIX=(-C "$cwd" ${git_args[@]+"${git_args[@]}"})
+  GIT_CMD=(git "${GIT_PREFIX[@]}")
 
   # Not a git repo (or unreadable) -> fail open. --absolute-git-dir because the
   # marker paths below are used from an unrelated working directory.
@@ -138,28 +140,26 @@ while IFS= read -r n; do
   # commits do not need the review gate.
   [ -f "$gitdir/MERGE_HEAD" ] && continue
 
-  # Compute the current fingerprint and compare against the recorded marker.
-  # An empty fingerprint means the hash tooling failed (e.g. sha256sum missing);
-  # fail open rather than blocking a commit we cannot evaluate.
-  fp="$(compute_fingerprint)"
-  [ -z "$fp" ] && continue
-  marker="$gitdir/claude-code-review-approved"
-  if [ -f "$marker" ]; then
-    recorded="$(cat "$marker" 2>/dev/null || true)"
-    if [ "$recorded" = "$fp" ]; then
-      # Review recorded for exactly these pending changes -> allow.
-      continue
-    fi
-  fi
+  # Ask the shared helper whether everything pending is content a review has
+  # already covered. The verdict is its EXIT CODE, so a crash (any other code)
+  # can never be mistaken for either answer and simply fails open.
+  unapproved="$("$py" "$MANIFEST_HELPER" check \
+    --marker "$gitdir/claude-code-review-approved" -- "${GIT_PREFIX[@]}" 2>/dev/null)"
+  verdict=$?
+  [ "$verdict" -eq "$REVIEW_EXIT_ALLOW" ] && continue
+  [ "$verdict" -ne "$REVIEW_EXIT_BLOCK" ] && continue   # cannot evaluate -> fail open
 
-  # No matching review on record -> block. Name the repo: the commit being
-  # blocked is not necessarily the one in the session cwd, and approving in the
-  # wrong repo records a marker that can never satisfy this gate.
+  # No review on record for this content -> block. Name the repo: the commit
+  # being blocked is not necessarily the one in the session cwd, and approving
+  # in the wrong repo records a marker that can never satisfy this gate.
   target="$("${GIT_CMD[@]}" rev-parse --show-toplevel 2>/dev/null || true)"
   [ -z "$target" ] && target="$gitdir"
-  echo "Blocked: pending changes in $target have not been code-reviewed." >&2
+  echo "Blocked: these paths in $target have changes no code review has covered:" >&2
+  echo "$unapproved" | sed 's/^/  /' >&2
   echo "Delegate the review to the code-reviewer subagent and address its findings, then record it with:" >&2
   echo "  bash \"\$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh\" --approve   (run inside $target), then retry the commit." >&2
+  echo "One approval covers a whole sequence of atomic commits, so do NOT re-approve between them — only after further edits." >&2
+  echo "Carving hunks with 'git add -p' does need a fresh approval: the partial content staged is not what was reviewed." >&2
   exit 2
 done <<< "$info"
 
