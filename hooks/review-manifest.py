@@ -19,13 +19,41 @@ directly comparable. A raw sha256 of the worktree bytes is NOT comparable: with
 `* text=auto eol=lf` in .gitattributes the worktree holds CRLF and the blob holds
 LF, so a byte hash would mismatch on every file forever.
 
-The identity is the oid ALONE — deliberately not the file mode. Carrying the
-mode meant a `chmod +x` re-triggered review, but it also meant an executable
-file blocked the moment `git reset` dropped its index entry and left the mode
-unknowable, and the block message tells the model not to re-approve mid-sequence.
-Two rounds of wedges came out of that, for a signal worth very little: a mode
-flip with identical content is visible in `git status` anyway, and on Windows
-core.filemode is off so it was never detected there in the first place.
+The identity is the object TYPE plus the oid — `f:<oid>` for a regular file,
+`l:<oid>` for a symlink, `g:<oid>` for a gitlink. The executable bit is
+deliberately collapsed: 100644 and 100755 both read as `f`.
+
+That split is not cosmetic. Carrying the full mode meant a `chmod +x`
+re-triggered review, but it also meant an executable file blocked the moment
+`git reset` dropped its index entry and left the mode unknowable — while the
+block message tells the model not to re-approve mid-sequence. Two rounds of
+wedges came out of that, for a signal worth very little: an exec flip with
+identical content is visible in `git status` anyway, and on Windows
+core.filemode is off so it was never detected there at all.
+
+Type does not have that problem, because it does not go unknowable the way a
+mode does: the worktree side normally reads it straight off the filesystem
+(islink/isdir/isfile) rather than inferring it from an index entry that may be
+gone. Two places do consult the index, and both are deliberate:
+
+  * A directory takes the index's gitlink entry, because hash-object cannot
+    hash a directory.
+  * With core.symlinks off — the Windows default — git checks a 120000 entry
+    out as a PLAIN FILE holding the target text, and `git add` on that file
+    still stores mode 120000. There the filesystem and git disagree about the
+    type, and git wins, so the recorded type has to win here too. Trusting
+    islink instead made a plain `git add` of unchanged content block: the
+    worktree said `f:<oid>`, staging produced `l:<oid>`, and neither the
+    record side nor the check side could ever agree. The rule is to follow
+    whichever side git itself will follow when it writes the object.
+
+Dropping type entirely, as an earlier version did, opened a real hole. Git
+stores a symlink as a blob holding the target string, so a regular file and a
+symlink whose target equals that file's contents are THE SAME BLOB, differing
+only in mode. A reviewed file could therefore be swapped for a symlink to an
+arbitrary path with the oid unchanged, and the gate would wave it through —
+even though `git status` reports it as a typechange (`T`). Verified as a live
+bypass before this tag was added, not a theoretical one.
 
 For each pending path we record the SET of identities the reviewer can be said
 to have seen: the blob in HEAD, in the index, and in the worktree. A commit is
@@ -79,7 +107,10 @@ ALLOW = 0
 BLOCK = 10
 CANNOT_EVALUATE = 3
 
-MARKER_VERSION = 2
+# Bumped to 3 when the type tag entered the identity. A v2 marker holds bare
+# oids, which can no longer match anything this builds; reading it as "no valid
+# approval" turns a silent permanent mismatch into one clean re-approval.
+MARKER_VERSION = 3
 
 # A recorded review goes stale after this long. Content changes already
 # invalidate the marker, so this only catches a marker abandoned mid-session and
@@ -89,9 +120,28 @@ MARKER_VERSION = 2
 MAX_MARKER_AGE_SECONDS = 7 * 24 * 60 * 60
 
 # Sentinel for "this path does not exist on this side" — not in HEAD, not in the
-# index, or deleted from the worktree. A real entry is a 40-character oid, which
-# can never collide with this.
+# index, or deleted from the worktree. Real entries are `<type>:<oid>`, which can
+# never collide with this. ABSENT is deliberately left untagged: "not here" has
+# no type, and tagging it would make a deletion fail to match itself.
 ABSENT = "-"
+
+# Object-type tags. The exec bit is collapsed into TYPE_FILE on purpose (see the
+# module docstring): type stays knowable when a mode does not.
+TYPE_FILE = "f"
+TYPE_LINK = "l"
+TYPE_GITLINK = "g"
+
+_MODE_TYPES = {"120000": TYPE_LINK, "160000": TYPE_GITLINK}
+
+
+def mode_type(mode):
+    """Git's 6-digit mode -> a type tag. 100644 and 100755 both mean "file"."""
+    return _MODE_TYPES.get(mode, TYPE_FILE)
+
+
+def tagged(type_tag, oid):
+    """`<type>:<oid>`, or ABSENT untouched so deletions still compare equal."""
+    return oid if oid == ABSENT else "%s:%s" % (type_tag, oid)
 
 # Prose and repo metadata. A commit touching ONLY these skips the gate: running
 # an opus code reviewer over prose is the cost this exemption exists to remove.
@@ -226,7 +276,8 @@ def head_identities(prefix, paths):
             continue
         parts = decode(meta).split()
         if len(parts) == 3:
-            identities[path] = parts[2]
+            # ls-tree prints `<mode> <type> <oid>`.
+            identities[path] = tagged(mode_type(parts[0]), parts[2])
     return identities
 
 
@@ -252,7 +303,7 @@ def index_identities(prefix, paths):
             continue
         mode, oid, stage = parts
         if stage == "0":
-            staged[path] = oid
+            staged[path] = tagged(mode_type(mode), oid)
         else:
             # An unmerged path has stages 1/2/3 and no stage 0. Letting that
             # read as ABSENT would be wrong, so build a deterministic composite
@@ -271,7 +322,38 @@ def index_identities(prefix, paths):
     return identities
 
 
-def worktree_identities(prefix, prefix_cwd, entries, index):
+def recorded_type(index, head, path):
+    """The type git already has on record for a path — index first, then HEAD.
+
+    The index wins because it is what `git add` preserves. Returns None when
+    neither side knows the path, which is the untracked case.
+    """
+    for side in (index, head):
+        entry = side.get(path, ABSENT)
+        if entry != ABSENT and ":" in entry:
+            return entry.split(":", 1)[0]
+    return None
+
+
+def symlinks_supported(prefix):
+    """Whether git will store what the filesystem says, for symlinks.
+
+    With core.symlinks false git cannot put a link in the worktree, so it writes
+    a plain file holding the target and keeps the 120000 mode on `git add`. The
+    filesystem then lies about the type and the index tells the truth.
+
+    Defaults to True when unset or unreadable: that is git's own default on
+    POSIX, and it is the answer that keeps the filesystem authoritative, so a
+    file/symlink swap is still caught. Guessing False would suppress the check.
+    """
+    try:
+        raw = git_bytes(prefix, ["config", "--bool", "core.symlinks"])
+    except CannotEvaluate:
+        return True
+    return decode(raw).strip() != "false"
+
+
+def worktree_identities(prefix, prefix_cwd, entries, index, head, symlinks_ok):
     """path -> blob oid for the worktree, ABSENT where the file is gone.
 
     Only paths whose worktree copy might differ from the index get hashed; when
@@ -281,6 +363,9 @@ def worktree_identities(prefix, prefix_cwd, entries, index):
     """
     identities = {}
     to_hash = []
+    # Paths that hash like a file but must be tagged as a link — see the
+    # core.symlinks branch below.
+    link_typed = set()
 
     for xy, path in entries:
         # Second status column: ' ' means the worktree agrees with the index.
@@ -299,7 +384,11 @@ def worktree_identities(prefix, prefix_cwd, entries, index):
         # That would block the ordinary approve-then-stage flow for a symlink
         # with no way out but re-approving after every `git add`.
         if os.path.islink(full):
-            identities[path] = symlink_identity(full)
+            # Tagged TYPE_LINK, which is what stops a symlink from passing as
+            # the regular file it replaced: the blob is identical, the tag is
+            # not. islink is checked first because a link to a directory would
+            # also satisfy isdir.
+            identities[path] = tagged(TYPE_LINK, symlink_identity(full))
             continue
         if os.path.isdir(full):
             # A submodule/gitlink. hash-object cannot hash a directory and would
@@ -308,6 +397,14 @@ def worktree_identities(prefix, prefix_cwd, entries, index):
             continue
         if not os.path.isfile(full):
             identities[path] = ABSENT
+            continue
+        if not symlinks_ok and recorded_type(index, head, path) == TYPE_LINK:
+            # A checked-out 120000 entry on a filesystem that cannot hold links.
+            # It looks like a plain file and hashes like one, but `git add` will
+            # store it as a symlink, so the symlink tag is the honest identity.
+            # Without this a plain `git add` of unchanged content false-blocks.
+            to_hash.append(path)
+            link_typed.add(path)
             continue
         if "\n" in path:
             # --stdin-paths is newline-delimited, so such a path is
@@ -343,8 +440,12 @@ def worktree_identities(prefix, prefix_cwd, entries, index):
         if len(oids) != len(to_hash):
             raise CannotEvaluate("hash-object returned a mismatched number of oids")
 
+        # Every path in this batch was screened to an existing regular file
+        # above, so TYPE_FILE is a fact — except where git will store the file
+        # back as the symlink it stands in for.
         for path, oid in zip(to_hash, oids):
-            identities[path] = oid
+            tag = TYPE_LINK if path in link_typed else TYPE_FILE
+            identities[path] = tagged(tag, oid)
 
     return identities
 
@@ -358,9 +459,19 @@ def symlink_identity(full_path):
     """
     try:
         target = os.readlink(full_path)
-    except OSError:
-        return ABSENT
+    except OSError as exc:
+        # NOT ABSENT. "I could not read this link" is not "this path is gone":
+        # ABSENT is a value the recorded set may not contain, so guessing it
+        # turns an unevaluable state into a confident block, which is the one
+        # thing this whole file is not allowed to do.
+        raise CannotEvaluate("could not read the symlink %s: %s" % (full_path, exc))
     if isinstance(target, str):
+        # Windows hands back 'd\target' for a link git stores as blob 'd/target',
+        # so without this the oid is the sha of the wrong bytes and staging the
+        # link false-blocks. On POSIX os.sep is '/' and a backslash is a legal
+        # filename character, so the replacement must stay Windows-only.
+        if os.sep != "/":
+            target = target.replace(os.sep, "/")
         target = target.encode("utf-8", "surrogateescape")
     # A git blob oid is sha1 over the object header plus the content.
     digest = hashlib.sha1(b"blob %d\0" % len(target) + target).hexdigest()
@@ -377,7 +488,9 @@ def build_state(prefix, prefix_cwd):
 
     head = head_identities(prefix, paths)
     index = index_identities(prefix, paths)
-    worktree = worktree_identities(prefix, prefix_cwd, entries, index)
+    worktree = worktree_identities(
+        prefix, prefix_cwd, entries, index, head, symlinks_supported(prefix)
+    )
 
     state = {}
     for path in paths:
