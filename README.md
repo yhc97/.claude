@@ -47,7 +47,11 @@ plans/           saved plan-mode artifacts
 |------|-------|--------------|
 | `session-start-pull.sh` | SessionStart | `git pull --ff-only` this repo; fails open so a stale checkout never blocks startup |
 | `block-main-commit.sh` | PreToolUse (Bash) | Blocks `git commit` on `main`/`master` — forces a `feat/ bugfix/ chore/…` branch first |
-| `require-code-review.sh` | PreToolUse (Bash) | Blocks `git commit` until a review is recorded for the *exact* pending diff (sha256 fingerprint); any further edit invalidates it |
+| `require-code-review.sh` | PreToolUse (Bash) | Blocks `git commit` until a review is recorded for the pending changes. Records what each file's content *was* at review time, so one review covers a whole sequence of atomic commits — but any further edit re-blocks. Prose-only changes (`*.md`, `*.txt`, `LICENCE`, `.gitignore`…) skip the gate |
+| `review-manifest.py` | (helper) | Shared by both modes of the gate: records the content manifest and decides whether everything pending is already covered |
 | `statusline.sh` | statusLine | Shows the active model tier + git branch |
+
+`bash hooks/tests/test-review-gate.sh` exercises the gate end to end — the atomic-commit sequence,
+the prose exemption, and every fail-open path.
 
 Every hook fails open on error — a broken hook degrades to the default behaviour, it never wedges a session.

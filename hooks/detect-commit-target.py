@@ -37,17 +37,22 @@ all verified rather than assumed:
   * A `cd` we cannot read at the start of a segment sets lost_track, so the
     record is dropped rather than misattributed to the cwd.
 
-Two limitations belong to the review gate rather than to detection, and no
-amount of parsing fixes either:
+One limitation belongs to the review gate rather than to detection, and no
+amount of parsing fixes it:
 
-  * The fingerprint describes the tree AS THE HOOK SEES IT, before the command
+  * The review marker describes the tree AS THE HOOK SEES IT, before the command
     runs. A compound command that mutates the tree and then commits — say
-    `printf x > tracked && git add -A && git commit` — is approved on the
-    pre-mutation state. Closing this would mean blocking the ordinary
-    `git add -A && git commit` pattern outright.
-  * `git status --porcelain -uall` lists untracked file NAMES, not contents.
-    Editing an untracked file after approval, or `git add -f` on an ignored
-    one, does not invalidate the marker.
+    `printf x > tracked && git add -A && git commit` — is judged on the
+    pre-mutation state. Closing it fully would mean blocking the ordinary
+    `git add -A && git commit` pattern outright. The gate does close the worst
+    version of it, where the pre-mutation state is CLEAN: an empty pending set
+    is allowed only when a review marker exists, so writing a file and
+    committing it in one command still needs a review on record.
+
+A second limitation used to live here — `git status --porcelain -uall` lists
+untracked file NAMES, not contents, so editing an untracked file after approval
+did not invalidate the marker. review-manifest.py now hashes the content of
+every pending path, untracked ones included, which closes it.
 """
 
 import json
