@@ -1,6 +1,6 @@
 # Instruction files
-- When creating agent instruction files in any project, write the canonical content in AGENTS.md and add a thin CLAUDE.md bridge next to it containing `@AGENTS.md`. Edit AGENTS.md, never the bridge.
-- Any CLAUDE.md audit or improvement (claude-md-improver, `/init`) must be applied to the imported AGENTS.md, not the bridge.
+- When creating agent instruction files in any project, write the canonical content in AGENTS.md and add a thin CLAUDE.md bridge next to it containing `@AGENTS.md`. Edit AGENTS.md, never the bridge — including audits from claude-md-improver or `/init`.
+- Keep AGENTS.md lean; if a section grows past ~40 lines, extract the detail into a referenced file and leave a one-line pointer here.
 - When running the session-report skill, always pass `--dir "$CLAUDE_CONFIG_DIR/projects"` as path.
 
 # Communication style
@@ -25,10 +25,6 @@
 - Prose-only changes need no review at all. Anything else, including `.gitattributes`, still needs one.
 - Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code. Skip Codex for small/routine changes.
 
-# Vault vs repos Taxonomy
-- The personal Obsidian vault at `$PERSONAL_OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
-
-
 # Models & delegation
 - Reserve the main loop (opus) for reasoning, design, and planning. Keep single-threaded implementation in the main loop.
 - Delegate only for work that is large and genuinely independent. Do not delegate anything you could finish in a handful of tool calls, and do not spawn subagents to double-check your own work beyond the code-review gate above. One subagent beats several; keep spawn counts low.
@@ -36,17 +32,13 @@
 - Offload fan-out search / "where does X live" to the `explorer` subagent; use `model: sonnet` if the search is ambiguous.
 - Use the `test-runner` subagent to run suites/linters.
 - Reserve opus for adversarial / correctness-critical work: `code-reviewer`, Codex, architecture review.
-- Keep AGENTS.md lean; if a section grows past ~40 lines, extract the detail into a referenced file and leave a one-line pointer here.
 
-# graphify
-- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+# Vault vs repos
+- The personal Obsidian vault at `$PERSONAL_OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
 
-# Python
-- Prefer using `uv` as the package manager
-
-# Language
-- Use British English
+# Conventions
+- Use British English.
+- Prefer `uv` as the Python package manager.
 
 <tone_preference>
 Readable over concise, outcome first, no Claude-isms. See Communication style above.
