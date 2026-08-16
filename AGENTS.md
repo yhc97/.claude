@@ -1,7 +1,7 @@
 # Instruction files
 - When creating agent instruction files in any project, write the canonical content in AGENTS.md and add a thin CLAUDE.md bridge next to it containing `@AGENTS.md`. Edit AGENTS.md, never the bridge.
 - Any CLAUDE.md audit or improvement (claude-md-improver, `/init`) must be applied to the imported AGENTS.md, not the bridge.
-- When running the session-report skill, always pass `--dir C:\Users\gordo\.claude-personal\projects` as path.
+- When running the session-report skill, always pass `--dir "$CLAUDE_CONFIG_DIR/projects"` as path.
 
 # Communication style
 - Readable beats concise. Drop details that would not change what I do next.
@@ -26,7 +26,8 @@
 - Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code. Skip Codex for small/routine changes.
 
 # Vault vs repos Taxonomy
-- The personal vault at `C:\Users\gordo\Projects\personal\Obsidian\Personal Vault` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
+- The personal Obsidian vault at `$OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
+- Set `$OBSIDIAN_VAULT` in your shell environment, not in this repo: `settings.json` is tracked and public, so a path placed there is published.
 
 
 # Models & delegation
