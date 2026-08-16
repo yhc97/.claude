@@ -20,10 +20,9 @@
 
 # Code review
 - After each nontrivial implementation, delegate review to the `code-reviewer` subagent (fresh context, read-only) before committing; address its findings.
-- Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo) — the commit-gate hook blocks `git commit` until this matches the pending changes.
-- One approval covers the whole sequence of atomic commits for those changes. Re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
+- Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo). The commit-gate hook blocks `git commit`, one approval covers the whole sequence of atomic commits for those changes. Re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
 - Prose-only changes need no review at all. Anything else, including `.gitattributes`, still needs one.
-- Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code. Skip Codex for small/routine changes.
+- Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code.
 
 # Models & delegation
 - Reserve the main loop (opus) for reasoning, design, and planning. Keep single-threaded implementation in the main loop.
@@ -31,7 +30,6 @@
 - For large mechanical / parallel edits, delegate to `Agent` with `model: sonnet`.
 - Offload fan-out search / "where does X live" to the `explorer` subagent; use `model: sonnet` if the search is ambiguous.
 - Use the `test-runner` subagent to run suites/linters.
-- Reserve opus for adversarial / correctness-critical work: `code-reviewer`, Codex, architecture review.
 
 # Vault vs repos
 - The personal Obsidian vault at `$PERSONAL_OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
@@ -41,5 +39,5 @@
 - Prefer `uv` as the Python package manager.
 
 <tone_preference>
-Readable over concise, outcome first, no Claude-isms. See Communication style above.
+Readable over concise, outcome first. See Communication style above.
 </tone_preference>
