@@ -26,8 +26,7 @@
 - Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code. Skip Codex for small/routine changes.
 
 # Vault vs repos Taxonomy
-- The personal Obsidian vault at `$OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
-- Set `$OBSIDIAN_VAULT` in your shell environment, not in this repo: `settings.json` is tracked and public, so a path placed there is published.
+- The personal Obsidian vault at `$PERSONAL_OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.
 
 
 # Models & delegation
