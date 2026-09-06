@@ -27,7 +27,6 @@
 - `/ponytail-review` is optional for an ad hoc complexity pass. It flips the ponytail mode flag to `review` (machine-wide, not per session), so run `/ponytail full` afterwards.
 - Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo). The commit-gate hook blocks `git commit`, one approval covers the whole sequence of atomic commits for those changes. Re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
 - Prose-only changes need no review at all. Anything else, including `.gitattributes`, still needs one.
-- Escalate to a Codex second opinion (`mcp__codex__codex`) when the change is high-stakes: a full-plan implementation, a diff touching core logic or many files, or security-sensitive code.
 
 # Models & delegation
 - Reserve the main loop (opus or fable) for reasoning, design, and planning. Keep single-threaded implementation in the main loop.
