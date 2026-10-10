@@ -1,4 +1,7 @@
 {
+  "env": {
+    "PONYTAIL_SUBAGENT_MATCHER": "^(?!(.*:)?(code-reviewer|explorer|test-runner|Explore|Plan)$)"
+  },
   "permissions": {
     "allow": [
       "Bash(git status)",
@@ -15,10 +18,7 @@
       "Bash(uv pip list)"
     ]
   },
-  "env": {
-    "PONYTAIL_SUBAGENT_MATCHER": "^(?!(.*:)?(code-reviewer|explorer|test-runner|Explore|Plan)$)"
-  },
-  "model": "fable",
+  "model": "opus",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -43,7 +43,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
@@ -52,6 +52,12 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_CONFIG_DIR/hooks/graphify-before-push.sh\"",
+            "timeout": 600,
+            "onFailure": "block"
           }
         ]
       }
@@ -82,6 +88,14 @@
         "source": "github",
         "repo": "DietrichGebert/ponytail"
       }
+    }
+  },
+  "modelSettings": {
+    "claude-fable-5-1": {
+      "effortLevel": "high"
+    },
+    "claude-opus-5-5": {
+      "effortLevel": "high"
     }
   }
 }
