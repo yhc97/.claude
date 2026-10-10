@@ -1,7 +1,11 @@
-"""Shared commit-detection helper for the two PreToolUse commit-gate hooks.
+"""Shared git-subcommand detection helper for the PreToolUse git-gate hooks.
 
 Reads a PreToolUse JSON payload on stdin and answers one question: does this
-Bash command invoke `git commit`, and if so, WHICH repository does it target?
+shell command (Bash or PowerShell tool) invoke `git <subcommand>`, and if so, WHICH repository does it
+target? The subcommand is argv[1] and defaults to `commit`, which is what the
+two commit gates want; graphify-before-push.sh asks for `push`. Everything
+below is written in terms of commits because that is where it came from, and
+the repo-resolution logic is the same for any subcommand.
 
 The target is not always the session cwd — `git -C <path> commit`,
 `git --git-dir=... --work-tree=... commit`, `GIT_DIR=... git commit` and
@@ -127,15 +131,19 @@ _VALUE_OPT_ALT = "|".join(VALUE_OPTS)
 # parser: nonsense like `git -C commit` matches, and erring towards detection
 # is the safe direction. `commit(?![\w./:-])` excludes commit-graph,
 # commit-tree and `commit.foo`, none of which are commits.
-COMMIT_RE = re.compile(
-    r"^\s*(?:\w+=" + VALUE + r"?\s+)*" + GIT_WORD + r"\s+"
-    r"(?:(?:" + _VALUE_OPT_ALT + r")\s+" + VALUE + r"\s+"
-    r"|--[\w-]+=" + VALUE + r"?\s+"
-    r"|(?!(?:" + _VALUE_OPT_ALT + r")\s)-{1,2}[\w-]+\s+)*"
-    r"commit(?![\w./:-])"
-)
+def subcommand_re(subcommand):
+    return re.compile(
+        r"^\s*(?:\w+=" + VALUE + r"?\s+)*" + GIT_WORD + r"\s+"
+        r"(?:(?:" + _VALUE_OPT_ALT + r")\s+" + VALUE + r"\s+"
+        r"|--[\w-]+=" + VALUE + r"?\s+"
+        r"|(?!(?:" + _VALUE_OPT_ALT + r")\s)-{1,2}[\w-]+\s+)*"
+        + re.escape(subcommand) + r"(?![\w./:-])"
+    )
 
 ASSIGN_RE = re.compile(r"^(\w+)=(.*)$", re.DOTALL)
+
+# PowerShell's form of a GIT_* environment assignment: `$env:GIT_DIR = "x"`.
+PS_ENV_RE = re.compile(r"^\s*\$env:(GIT_\w+)\s*=", re.IGNORECASE)
 
 # Connectors after which a preceding `cd` may not have taken effect: `||` runs
 # the next command precisely when the previous one failed, `&` backgrounds it
@@ -147,8 +155,13 @@ UNSOUND_SEPARATORS = ("||", "|", "&")
 HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 # `cd somewhere && git commit` targets the repo at `somewhere`, exactly as
-# `git -C somewhere commit` does.
-CD_RE = re.compile(r"^\s*cd(?:\s|$)")
+# `git -C somewhere commit` does. The PowerShell tool feeds us its commands too,
+# so its location cmdlets and aliases count as moves. Only a plain `cd <path>`
+# is ever followed (cd_target); every other form sets lost_track and drops the
+# record rather than guessing.
+CD_WORDS = ("cd", "set-location", "sl", "chdir", "push-location", "pushd",
+            "pop-location", "popd")
+CD_RE = re.compile(r"^\s*(?:" + "|".join(CD_WORDS) + r")(?:\s|$)", re.IGNORECASE)
 
 # Shell keywords that can precede a command inside a segment. Stripping them
 # means `if ...; then cd x && git commit; fi` reads the cd, instead of missing
@@ -360,8 +373,9 @@ def hides_a_cd(segment):
     except ValueError:
         # Unreadable quoting. Only worry if the text actually mentions a cd,
         # otherwise every stray apostrophe would disable the gate.
-        return re.search(r"(?<![\w-])cd\s", segment) is not None
-    return "cd" in toks[1:]
+        return re.search(r"(?<![\w-])(?:" + "|".join(CD_WORDS) + r")\s",
+                         segment, re.IGNORECASE) is not None
+    return any(tok.lower() in CD_WORDS for tok in toks[1:])
 
 
 def scan(toks):
@@ -463,12 +477,23 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         return
+    wanted_re = subcommand_re(sys.argv[1] if len(sys.argv) > 1 else "commit")
 
     tool_input = payload.get("tool_input") or {}
     command = tool_input.get("command") or ""
     cwd = payload.get("cwd") or ""
     if not isinstance(command, str) or not isinstance(cwd, str) or not cwd:
         return
+
+    # The PowerShell tool sends its commands through the same field, read here
+    # with Bash rules. Backslash is a path separator there, not an escape, so it
+    # becomes `/` (which git and PowerShell both accept). Backticks (escape and
+    # line continuation) and parentheses (current scope, not a subshell) mean
+    # something else in PowerShell, so any move seen in such a command is
+    # distrusted below rather than scoped by a depth we may have misread.
+    powershell = payload.get("tool_name") == "PowerShell"
+    if powershell:
+        command = command.replace("\\", "/")
 
     command = strip_heredoc_bodies(command)
     # A backslash-newline continuation is one command, but the splitter treats
@@ -492,7 +517,7 @@ def main():
     # move: we clearly cannot tell code from data here, so a move we think we
     # see is not one we can stand behind. A move we cannot apply becomes
     # lost_track below, which drops the record rather than misreporting it.
-    moves_untrusted = unterminated
+    moves_untrusted = unterminated or (powershell and re.search(r"[`(]", command))
     if unterminated:
         segments = [(seg, "", 0) for seg in NAIVE_SPLIT_RE.split(command)]
 
@@ -505,7 +530,7 @@ def main():
             # of its own. Either way we no longer know where it lands.
             lost_track = True
 
-        if COMMIT_RE.search(segment):
+        if wanted_re.search(segment):
             if lost_track:
                 continue
             flags = repo_flags(segment)
@@ -521,6 +546,13 @@ def main():
             continue
 
         command_text = strip_keywords(segment)
+        ps_env = PS_ENV_RE.match(command_text)
+        if ps_env:
+            # `$env:GIT_DIR = ...` steers every later git call, like `export`.
+            # Never translated, only distrusted.
+            if ps_env.group(1).upper() not in HARMLESS_GIT_ENV:
+                lost_track = True
+            continue
         env = standalone_env(command_text)
         if env == "unknown":
             lost_track = True

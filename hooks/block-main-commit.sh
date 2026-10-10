@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PreToolUse (Bash matcher) commit-guard hook.
+# PreToolUse (Bash and PowerShell matcher) commit-guard hook.
 # Blocks `git commit` on branch main/master; fails open on everything else.
 #
 # Protocol: PreToolUse JSON arrives on stdin. It carries .tool_input.command
-# (the Bash command about to run — MAY CONTAIN NEWLINES) and .cwd (a Windows
+# (the shell command about to run — MAY CONTAIN NEWLINES) and .cwd (a Windows
 # path, no newlines). Exit 2 = block (stderr shown to the model); exit 0 =
 # allow / no opinion.
 #

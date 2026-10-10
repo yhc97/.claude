@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# PreToolUse (Bash matcher) commit-review-gate hook  +  --approve recorder.
+# PreToolUse (Bash and PowerShell matcher) commit-review-gate hook  +  --approve recorder.
 #
-# Purpose: block `git commit` (issued via the Bash tool) until a code review
+# Purpose: block `git commit` (issued via the Bash or PowerShell tool) until a code review
 # has been recorded for the CURRENT pending changes. A review is "recorded" by
 # running this same script with --approve, which stores a fingerprint of the
 # pending changes. The commit is allowed only while that fingerprint still
@@ -15,7 +15,7 @@
 #                       fingerprint to the marker file so the next commit passes.
 #
 # Protocol (hook mode): PreToolUse JSON arrives on stdin. It carries
-# .tool_input.command (the Bash command about to run — MAY CONTAIN NEWLINES) and
+# .tool_input.command (the shell command about to run — MAY CONTAIN NEWLINES) and
 # .cwd (a Windows path, no newlines). Exit 2 = block (stderr shown to the model);
 # exit 0 = allow / no opinion. This gate must NEVER block anything except a
 # detected `git commit`, and must FAIL OPEN on all errors.

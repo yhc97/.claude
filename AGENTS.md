@@ -27,6 +27,7 @@
 - `/ponytail-review` is optional for an ad hoc complexity pass. It flips the ponytail mode flag to `review` (machine-wide, not per session), so run `/ponytail full` afterwards.
 - Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo). The commit-gate hook blocks `git commit`, one approval covers the whole sequence of atomic commits for those changes. Re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
 - Prose-only changes need no review at all. Anything else, including `.gitattributes`, still needs one.
+- `graphify-out/` is review-exempt (gate and reviewer). Never commit it by hand unless the push hook tells you to: the hook (`hooks/graphify-before-push.sh`) refreshes and commits the graph right before each push.
 
 # Models & delegation
 - Reserve the main loop (opus or fable) for reasoning, design, and planning. Keep single-threaded implementation in the main loop.
@@ -34,7 +35,7 @@
 - For large mechanical / parallel edits, delegate to `Agent` with `model: sonnet`.
 - Offload fan-out search / "where does X live" to the `explorer` subagent; use `model: sonnet` if the search is ambiguous.
 - Use the `test-runner` subagent to run suites/linters.
-- The ponytail ruleset is injected into subagents that write code only specified in `settings.json`; add new read-only agents there.
+- Ponytail rules are injected into every subagent except those listed in `PONYTAIL_SUBAGENT_MATCHER` in `settings.json`; add new read-only agents to that list.
 
 # Vault vs repos
 - The personal Obsidian vault at `$PERSONAL_OBSIDIAN_VAULT` owns cross-project and cross-domain knowledge — decisions, lessons, patterns, concepts. Vault writes to individual repos, not the other way around.

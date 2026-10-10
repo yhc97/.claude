@@ -3,6 +3,7 @@ name: test-runner
 description: Runs the project's test suite and/or linters and reports a concise pass/fail with only the failing output. Use to verify a change without pulling verbose logs into the main context.
 model: sonnet
 tools: Read, Grep, Glob, Bash
+omitClaudeMd: true
 ---
 
 You run tests and linters for a project and report back concisely.
