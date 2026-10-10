@@ -464,6 +464,50 @@ touch "$repo/.git/MERGE_HEAD"
 check "merge in progress" 0 "$(run_gate "$repo")"
 rm -f "$repo/.git/MERGE_HEAD"
 
+# --- subcommand detection (detect-commit-target.py) -------------------------
+
+DETECT="$HOOKS_DIR/detect-commit-target.py"
+py="$(command -v python3 || command -v python)"
+
+# Records the helper reports for <subcommand> in <command> sent by <tool>
+# (default Bash), CRs stripped, newlines shown as |, so one string comparison
+# checks cwd and replayed options.
+detect() {
+  "$py" -c 'import json,sys; print(json.dumps({"cwd":"/w","tool_name":sys.argv[2],"tool_input":{"command":sys.argv[1]}}))' "$2" "${3:-Bash}" |
+    "$py" "$DETECT" "$1" | tr -d '\r' | tr '\n' '|'
+}
+
+check_detect() {
+  local label="$1" expected="$2" actual
+  actual="$(detect "$3" "$4" "${5:-Bash}")"
+  if [ "$expected" = "$actual" ]; then
+    PASS=$((PASS + 1))
+    printf '  ok    %s\n' "$label"
+  else
+    FAIL=$((FAIL + 1))
+    printf '  FAIL  %s (expected [%s], got [%s])\n' "$label" "$expected" "$actual"
+  fi
+}
+
+echo "push detection"
+check_detect "plain push" "0|/w" push "git push"
+check_detect "push with -C" "2|/w|-C|other" push "git -C other push origin x"
+check_detect "cd then push" "2|/w|-C|x" push "cd x && git push"
+check_detect "stash push is not a push" "" push "git stash push"
+check_detect "commit mode ignores a push" "" commit "git push"
+
+echo "PowerShell location changes are never guessed at"
+check_detect "Set-Location then push" "" push "Set-Location x; git push"
+check_detect "lower-case set-location then commit" "" commit "set-location x; git commit -m y"
+check_detect "Push-Location then push" "" push "Push-Location x; git push"
+check_detect "cd in PowerShell still followed" "2|/w|-C|x" push "cd x; git push" PowerShell
+check_detect "\$env:GIT_DIR then commit" "" commit '$env:GIT_DIR = "C:/o/.git"; git commit -m x' PowerShell
+check_detect "harmless \$env:GIT_AUTHOR_NAME keeps the record" "0|/w" commit '$env:GIT_AUTHOR_NAME = "a"; git commit -m x' PowerShell
+check_detect "backtick continuation distrusts a cd" "" push $'git add a `\n b\ncd other\ngit push' PowerShell
+check_detect "PowerShell parentheses distrust a cd" "" commit '(cd x); git commit -m y' PowerShell
+check_detect "backslash path read as a path" "2|/w|-C|C:/repo" push 'cd C:\repo; git push' PowerShell
+check_detect "Bash backslash still an escape" "2|/w|-C|C:repo" push 'cd C:\repo; git push'
+
 if [ "$SKIP" -gt 0 ]; then
   printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 else
