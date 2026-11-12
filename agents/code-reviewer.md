@@ -1,8 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews a just-completed implementation with fresh context. Delegate to this agent after each nontrivial implementation, before committing. Read-only — it reports findings, it does not edit.
-model: opus
-effort: high
+model: inherit
 tools: Read, Grep, Glob, Bash
 ---
 
