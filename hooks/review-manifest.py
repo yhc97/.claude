@@ -143,7 +143,7 @@ def tagged(type_tag, oid):
     return oid if oid == ABSENT else "%s:%s" % (type_tag, oid)
 
 # Prose and repo metadata. A commit touching ONLY these skips the gate: running
-# an opus code reviewer over prose is the cost this exemption exists to remove.
+# a code reviewer over prose is the cost this exemption exists to remove.
 # Matched against the BASENAME at any depth, case-folded.
 #
 # Two things are deliberately missing. There is no location glob (no `docs/**`)

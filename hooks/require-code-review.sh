@@ -32,7 +32,7 @@
 # already seen. Two consequences that are the whole point of it:
 #   * one review covers a whole sequence of atomic commits, because committing
 #     part of the reviewed work leaves the rest still reviewed;
-#   * a commit touching only prose skips the gate, because an opus code review
+#   * a commit touching only prose skips the gate, because a code review
 #     of a README is a waste of a review.
 # Its exit code is the verdict — 0 allow, 10 block, anything else means it could
 # not tell and we fail open.
@@ -163,7 +163,7 @@ while IFS= read -r n; do
   else
     echo "Blocked: no valid code review is on record for $target." >&2
   fi
-  echo "Delegate the review to the code-reviewer subagent and address its findings, then record it with:" >&2
+  echo "For a nontrivial change, delegate one review to the code-reviewer subagent and address its findings. For a trivial change, read the diff yourself. Then record it with:" >&2
   echo "  bash \"\$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh\" --approve   (run inside $target), then retry the commit." >&2
   echo "One approval covers a whole sequence of atomic commits, so do NOT re-approve between them — only after further edits." >&2
   echo "Carving hunks with 'git add -p' does need a fresh approval: the partial content staged is not what was reviewed." >&2
