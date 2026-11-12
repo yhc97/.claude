@@ -10,6 +10,7 @@
 - State claims directly rather than building towards a turn of phrase.
 - Before the first tool call, say in one sentence what you are about to do. While working, give a brief update only on finding something important or changing direction.
 - Match the length of written documents to what the task needs: cover the substance without padding with filler sections, redundant summaries, or boilerplate.
+- This section decides how replies are written. The ponytail plugin decides what gets built; its limits on reply length do not apply.
 
 # Git
 - Never commit directly to the main branch; create a branch first. If already on a side branch, confirm with user before further branching off.
@@ -23,18 +24,18 @@
 - Avoid chaining shell commands unless the data piping is needed.
 
 # Code review
-- After each nontrivial implementation, delegate review to the `code-reviewer` subagent (fresh context, read-only) before committing; address its findings.
+- Review once per finished piece of work, not per edit. When a nontrivial implementation is complete and ready to commit, delegate one review to the `code-reviewer` subagent (fresh context, read-only) and address its findings.
+- Trivial changes need no subagent: a few lines of configuration, a rename, a comment, or a one-line fix. Read the diff yourself, then record the approval directly. The same applies to small follow-up edits made in response to review findings.
 - `/ponytail-review` is optional for an ad hoc complexity pass. It flips the ponytail mode flag to `review` (machine-wide, not per session), so run `/ponytail full` afterwards.
-- Once the `code-reviewer` subagent completes and its findings are addressed, record the review with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo). The commit-gate hook blocks `git commit`, one approval covers the whole sequence of atomic commits for those changes. Re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
+- Once the review is done, record with `bash "$CLAUDE_CONFIG_DIR/hooks/require-code-review.sh" --approve` (run in the repo). The commit-gate hook blocks `git commit`, one approval covers the whole sequence of atomic commits for those changes. Re-approve only after further edits (including `git add -p` hunk carving, which stages content nobody reviewed).
 - Prose-only changes need no review at all. Anything else, including `.gitattributes`, still needs one.
 - `graphify-out/` is review-exempt (gate and reviewer). Never commit it by hand unless the push hook tells you to: the hook (`hooks/graphify-before-push.sh`) refreshes and commits the graph right before each push.
 
 # Models & delegation
-- Reserve the main loop (opus or fable) for reasoning, design, and planning. Keep single-threaded implementation in the main loop.
+- These rules hold whichever model and effort level the session runs on. Reserve the main loop for reasoning, design, and planning. Keep single-threaded implementation in the main loop.
 - Delegate only for work that is large and genuinely independent. Do not delegate anything you could finish in a handful of tool calls, and do not spawn subagents to double-check your own work beyond the code-review gate above. One subagent beats several; keep spawn counts low.
-- For large mechanical / parallel edits, delegate to `Agent` with `model: sonnet`.
-- Offload fan-out search / "where does X live" to the `explorer` subagent; use `model: sonnet` if the search is ambiguous.
-- Use the `test-runner` subagent to run suites/linters.
+- For large mechanical / parallel edits, delegate to `Agent` on a cheaper model than the main loop.
+- Use the `test-runner` subagent to run suites/linters when the output is likely to be long; run a single quick test or check directly.
 - Ponytail rules are injected into every subagent except those listed in `PONYTAIL_SUBAGENT_MATCHER` in `settings.json`; add new read-only agents to that list.
 
 # Vault vs repos
@@ -43,7 +44,3 @@
 # Conventions
 - Use British English.
 - Prefer `uv` as the Python package manager.
-
-<tone_preference>
-Readable over concise, outcome first. See Communication style above.
-</tone_preference>

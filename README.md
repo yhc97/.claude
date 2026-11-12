@@ -20,7 +20,7 @@ hook `git pull`s this repo at the start of each session, so the harness is alway
 AGENTS.md        canonical instructions (the assistant's rules of engagement)
 CLAUDE.md        thin @AGENTS.md bridge — Claude Code reads this; edit AGENTS.md, not the bridge
 settings.json    permissions, hooks, statusline, enabled plugins
-agents/          custom subagents (code-reviewer, explorer, test-runner)
+agents/          custom subagents (code-reviewer, test-runner)
 hooks/           shell hooks wired from settings.json (see below)
 projects/        per-project session history + memory/ notes (MEMORY.md index → topic files)
 plans/           saved plan-mode artifacts
@@ -32,9 +32,9 @@ plans/           saved plan-mode artifacts
   keeps every machine up to date automatically.
 - **One canonical instruction file.** Rules live in `AGENTS.md`; each `CLAUDE.md` is a one-line
   `@AGENTS.md` bridge. Ensuring the setup reusabulity in other platforms.
-- **Model tiering.** Match the model to the job: `explorer` (haiku) for cheap fan-out search,
-  `test-runner` (sonnet) for running suites, `code-reviewer` (opus, high effort) for
-  correctness-critical review. The main loop stays on opus for reasoning and implementation.
+- **Model tiering.** Match the model to the job: the built-in `Explore` agent for broad searches,
+  `test-runner` (sonnet) for running suites. `code-reviewer` inherits the session's model and
+  effort, so the review is as strong as the author whichever model the main loop runs on.
 - **Progressive context disclosure.** Subagents do context-heavy work and return only conclusions
   (`file:line` pointers, findings, pass/fail), keeping the main window lean. The `memory/MEMORY.md`
   index links to topic notes rather than loading everything up front.
